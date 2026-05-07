@@ -204,6 +204,7 @@ def score_latest_unprocessed():
     train = df_features.drop(df_features.index[target_pos])
     target_features = df_features.iloc[[target_pos]]
 
+    # backup: isolation forest
     iso = IsolationForest(contamination=CONTAMINATION, random_state=RANDOM_STATE)
     iso.fit(train)
 
