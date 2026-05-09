@@ -3,18 +3,16 @@ import json
 import random
 import time
 from datetime import datetime
-from supabase import create_client, Client
+from azure.eventhub import EventHubProducerClient, EventData
 import pandas as pd
 import numpy as np
 rng = np.random.default_rng()
 
 from dotenv import load_dotenv
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-load_dotenv(dotenv_path=_env_path)
+load_dotenv()   
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "orders")
+EVENTHUB_CONNECTION_STRING = os.getenv("EVENTHUB_CONNECTION_STRING")
+EVENTHUB_NAME = os.getenv("EVENTHUB_NAME")
 
 # ============================================
 # JSON helper
@@ -34,10 +32,9 @@ def json_safe(obj, **kwargs):
 # LOAD MASTER DATA
 # ============================================
 script_dir = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(script_dir, "00_synthetic_data", "data")
-df_restaurants = pd.read_csv(os.path.join(DATA_DIR, "restaurants.csv"))
-df_customers = pd.read_csv(os.path.join(DATA_DIR, "customers2.csv"))
-df_menu_items = pd.read_csv(os.path.join(DATA_DIR, "menu_items.csv"))
+df_restaurants = pd.read_csv(os.path.join(script_dir, "data", "restaurants.csv"))
+df_customers = pd.read_csv(os.path.join(script_dir, "data", "customers2.csv"))
+df_menu_items = pd.read_csv(os.path.join(script_dir, "data", "menu_items.csv"))
 
 RESTAURANTS = df_restaurants['restaurant_id'].tolist()
 CUSTOMERS = df_customers['customer_id'].tolist()
@@ -128,35 +125,36 @@ def generate_order():
         "credit_card_exp_year": cust.credit_card_exp_year,
         "credit_card_exp_month": cust.credit_card_exp_month,
         "cvv": cust.cvv,
-        "card_match": rng.choice(CARD_ACCEPTED, p=CARD_ACCEPTED_PROBABILITIES),
-        "is_fraud": 0
+        "card_match": rng.choice(CARD_ACCEPTED, p=CARD_ACCEPTED_PROBABILITIES)
     }
 
     return order
 
 
-def stream_to_supabase(interval_seconds=3, max_orders=None, batch_size=10):
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+def stream_to_eventhub(interval_seconds=3, max_orders=None):
+    producer = EventHubProducerClient.from_connection_string(
+        conn_str=EVENTHUB_CONNECTION_STRING,
+        eventhub_name=EVENTHUB_NAME
+    )
 
-    print(f"\n\nStreaming to Supabase table: {SUPABASE_TABLE} (batch_size={batch_size})", flush=True)
+    print(f"\n\nStreaming to Event Hub: {EVENTHUB_NAME}")
     order_count = 0
 
     try:
         while True:
-            batch = []
-            for _ in range(batch_size):
-                order = generate_order()
-                batch.append(json.loads(json_safe(order)))
-                order_count += 1
-                print(f"\n[{order_count}] {order['order_id']} | {order['restaurant_id']} | AED {order['total_amount']}", flush=True)
-                print(json_safe(order, indent=4), flush=True)
+            order = generate_order()
 
-                if max_orders and order_count >= max_orders:
-                    break
+            # JSON-safe serialization for Event Hub
+            order_json = json_safe(order)
 
-            # Batch insert
-            supabase.table(SUPABASE_TABLE).insert(batch).execute()
-            print(f"\n-- Inserted batch of {len(batch)} orders --", flush=True)
+            event_data_batch = producer.create_batch()
+            event_data_batch.add(EventData(order_json))
+            producer.send_batch(event_data_batch)
+
+            order_count += 1
+            print(f"\n[{order_count}] {order['order_id']} | {order['restaurant_id']} | AED {order['total_amount']}")
+            # JSON-safe pretty print
+            print(json_safe(order, indent=4))
 
             if max_orders and order_count >= max_orders:
                 break
@@ -164,8 +162,10 @@ def stream_to_supabase(interval_seconds=3, max_orders=None, batch_size=10):
             time.sleep(interval_seconds)
 
     except KeyboardInterrupt:
-        print("\nStopped", flush=True)
+        print("\nStopped")
+    finally:
+        producer.close()
 
 
 if __name__ == "__main__":
-    stream_to_supabase(interval_seconds=3)
+    stream_to_eventhub(interval_seconds=3)

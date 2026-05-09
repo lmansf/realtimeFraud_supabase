@@ -9,7 +9,7 @@ import numpy as np
 rng = np.random.default_rng()
 
 from dotenv import load_dotenv
-_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".env")
 load_dotenv(dotenv_path=_env_path)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -34,10 +34,9 @@ def json_safe(obj, **kwargs):
 # LOAD MASTER DATA
 # ============================================
 script_dir = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(script_dir, "00_synthetic_data", "data")
-df_restaurants = pd.read_csv(os.path.join(DATA_DIR, "restaurants.csv"))
-df_customers = pd.read_csv(os.path.join(DATA_DIR, "customers2.csv"))
-df_menu_items = pd.read_csv(os.path.join(DATA_DIR, "menu_items.csv"))
+df_restaurants = pd.read_csv(os.path.join(script_dir, "data", "restaurants.csv"))
+df_customers = pd.read_csv(os.path.join(script_dir, "data", "customers2.csv"))
+df_menu_items = pd.read_csv(os.path.join(script_dir, "data", "menu_items.csv"))
 
 RESTAURANTS = df_restaurants['restaurant_id'].tolist()
 CUSTOMERS = df_customers['customer_id'].tolist()
@@ -128,35 +127,30 @@ def generate_order():
         "credit_card_exp_year": cust.credit_card_exp_year,
         "credit_card_exp_month": cust.credit_card_exp_month,
         "cvv": cust.cvv,
-        "card_match": rng.choice(CARD_ACCEPTED, p=CARD_ACCEPTED_PROBABILITIES),
-        "is_fraud": 0
+        "card_match": rng.choice(CARD_ACCEPTED, p=CARD_ACCEPTED_PROBABILITIES)
     }
 
     return order
 
 
-def stream_to_supabase(interval_seconds=3, max_orders=None, batch_size=10):
+def stream_to_supabase(interval_seconds=3, max_orders=None):
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    print(f"\n\nStreaming to Supabase table: {SUPABASE_TABLE} (batch_size={batch_size})", flush=True)
+    print(f"\n\nStreaming to Supabase table: {SUPABASE_TABLE}", flush=True)
     order_count = 0
 
     try:
         while True:
-            batch = []
-            for _ in range(batch_size):
-                order = generate_order()
-                batch.append(json.loads(json_safe(order)))
-                order_count += 1
-                print(f"\n[{order_count}] {order['order_id']} | {order['restaurant_id']} | AED {order['total_amount']}", flush=True)
-                print(json_safe(order, indent=4), flush=True)
+            order = generate_order()
 
-                if max_orders and order_count >= max_orders:
-                    break
+            # Supabase insert — serialize numpy types via json round-trip
+            record = json.loads(json_safe(order))
+            supabase.table(SUPABASE_TABLE).insert(record).execute()
 
-            # Batch insert
-            supabase.table(SUPABASE_TABLE).insert(batch).execute()
-            print(f"\n-- Inserted batch of {len(batch)} orders --", flush=True)
+            order_count += 1
+            print(f"\n[{order_count}] {order['order_id']} | {order['restaurant_id']} | AED {order['total_amount']}", flush=True)
+            # JSON-safe pretty print
+            print(json_safe(order, indent=4), flush=True)
 
             if max_orders and order_count >= max_orders:
                 break
